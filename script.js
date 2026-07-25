@@ -24,10 +24,6 @@ const state = {
 
 const meteors = [];
 
-/*
- * Fullscreen harus dipanggil langsung dari event sentuhan pengguna.
- * Listener capture membuatnya bekerja di seluruh halaman.
- */
 function requestFullscreenMode(){
     if(document.fullscreenElement || state.fullscreenBusy){
         return;
@@ -47,10 +43,6 @@ function requestFullscreenMode(){
     try{
         const result = request.call(element);
 
-        if(result?.catch){
-            result.catch(() => {});
-        }
-
         if(result?.finally){
             result.finally(() => {
                 state.fullscreenBusy = false;
@@ -65,11 +57,6 @@ function requestFullscreenMode(){
     }
 }
 
-/*
- * Setiap sentuhan/klik pertama di lokasi apa pun pada halaman.
- * Jangan memakai preventDefault agar browser tetap menganggapnya
- * sebagai user gesture untuk fullscreen.
- */
 function enableFullscreenAnywhere(){
     document.addEventListener("pointerdown",requestFullscreenMode,true);
     document.addEventListener("touchstart",requestFullscreenMode,true);
@@ -83,6 +70,51 @@ function showMessage(element,text,error = true){
 
     element.textContent = text;
     element.style.color = error ? "#ff7777" : "#7dffb2";
+}
+
+function updateScore(){
+    scoreText.textContent =
+        `Score : ${state.score} | Level : ${state.level}`;
+}
+
+function showLevelUp(){
+    levelUp.textContent = `LEVEL ${state.level} UP!`;
+    levelUp.classList.remove("show");
+
+    void levelUp.offsetWidth;
+
+    levelUp.classList.add("show");
+
+    setTimeout(() => {
+        levelUp.classList.remove("show");
+    },1200);
+}
+
+function increaseLevel(){
+    const newLevel = Math.min(
+        30,
+        Math.floor(state.score / 10) + Number(levelSelect.value || 1)
+    );
+
+    if(newLevel > state.level){
+        state.level = newLevel;
+        updateScore();
+        showLevelUp();
+        restartMeteorTimer();
+    }
+}
+
+function restartMeteorTimer(){
+    clearInterval(state.meteorTimer);
+
+    if(!state.running){
+        return;
+    }
+
+    state.meteorTimer = setInterval(
+        createMeteor,
+        Math.max(350,1100 - state.level * 20)
+    );
 }
 
 function createAuthScreen(){
@@ -135,12 +167,15 @@ function createAuthScreen(){
     let registerMode = false;
 
     switchButton.addEventListener("click",() => {
-        requestFullscreenMode();
-
         registerMode = !registerMode;
 
-        title.textContent = registerMode ? "DAFTAR AKUN" : "LOGIN";
-        submit.textContent = registerMode ? "DAFTAR" : "LOGIN";
+        title.textContent = registerMode
+            ? "DAFTAR AKUN"
+            : "LOGIN";
+
+        submit.textContent = registerMode
+            ? "DAFTAR"
+            : "LOGIN";
 
         switchButton.textContent = registerMode
             ? "Sudah punya akun? Login"
@@ -155,7 +190,6 @@ function createAuthScreen(){
 
     form.addEventListener("submit",async event => {
         event.preventDefault();
-        requestFullscreenMode();
 
         const name = username.value.trim().toLowerCase();
         const pass = password.value;
@@ -221,124 +255,29 @@ function showUserPanel(){
     panel.id = "userPanel";
     panel.innerHTML = `
         <span>👤 ${state.user.username}</span>
-        ${
-            state.user.isAdmin
-                ? `<button id="adminButton">⚙ ADMIN</button>`
-                : ""
-        }
         <button id="logoutButton">LOGOUT</button>
     `;
 
     document.body.appendChild(panel);
-
     $("logoutButton").addEventListener("click",logout);
-
-    if(state.user.isAdmin){
-        $("adminButton").addEventListener("click",openAdminPanel);
-    }
 }
 
 async function logout(){
     stopGame();
 
     try{
-        await fetch("/api/auth/logout",{ method:"POST" });
+        await fetch("/api/auth/logout",{method:"POST"});
     }catch(error){}
 
     state.user = null;
     state.gameId = null;
 
     document.getElementById("userPanel")?.remove();
-    document.getElementById("adminPanel")?.remove();
 
     menu.style.display = "flex";
     gameOver.style.display = "none";
 
     createAuthScreen();
-}
-
-function openAdminPanel(){
-    if(!state.user?.isAdmin ||
-        document.getElementById("adminPanel")){
-        return;
-    }
-
-    const panel = document.createElement("div");
-
-    panel.id = "adminPanel";
-    panel.innerHTML = `
-        <form class="adminBox">
-            <h2>ADMIN PANEL</h2>
-
-            <label>Running Text</label>
-            <input id="runningText" maxlength="80" required>
-
-            <label>Efek Tampilan</label>
-            <select id="effectSelect">
-                <option value="rainbow">Rainbow</option>
-                <option value="pulse">Pulse</option>
-                <option value="glitch">Glitch</option>
-                <option value="static">Static</option>
-            </select>
-
-            <button type="submit">SIMPAN</button>
-            <button id="closeAdmin" type="button">TUTUP</button>
-
-            <p id="adminMessage"></p>
-        </form>
-    `;
-
-    document.body.appendChild(panel);
-
-    $("closeAdmin").addEventListener("click",() => panel.remove());
-    loadAdminConfig();
-
-    panel.querySelector("form").addEventListener("submit",async event => {
-        event.preventDefault();
-        requestFullscreenMode();
-
-        const runningText = $("runningText").value.trim();
-        const effect = $("effectSelect").value;
-
-        try{
-            const response = await fetch("/api/admin/game-config",{
-                method:"POST",
-                headers:{
-                    "Content-Type":"application/json"
-                },
-                body:JSON.stringify({ runningText,effect })
-            });
-
-            const data = await response.json();
-
-            if(!response.ok){
-                throw new Error(data.error || "Gagal menyimpan konfigurasi.");
-            }
-
-            $("gameTitle").textContent = data.runningText;
-            document.body.dataset.effect = data.effect;
-
-            showMessage(
-                $("adminMessage"),
-                "Konfigurasi berhasil disimpan.",
-                false
-            );
-        }catch(error){
-            showMessage($("adminMessage"),error.message);
-        }
-    });
-}
-
-async function loadAdminConfig(){
-    try{
-        const response = await fetch("/api/game-config");
-        const data = await response.json();
-
-        $("runningText").value = data.runningText || "SANDRO GAME V2";
-        $("effectSelect").value = data.effect || "rainbow";
-    }catch(error){
-        showMessage($("adminMessage"),"Gagal memuat konfigurasi.");
-    }
 }
 
 async function loadConfig(){
@@ -417,8 +356,30 @@ function clearMeteors(){
     }
 }
 
-function updateScore(){
-    scoreText.textContent = `Score : ${state.score}`;
+async function saveMeteorEscaped(){
+    if(!state.gameId){
+        return;
+    }
+
+    try{
+        const response = await fetch(
+            `/api/games/${state.gameId}/meteor-escaped`,
+            {method:"POST"}
+        );
+
+        if(!response.ok){
+            return;
+        }
+
+        const data = await response.json();
+
+        if(Number(data.level) > state.level){
+            state.level = Math.min(30,Number(data.level));
+            updateScore();
+            showLevelUp();
+            restartMeteorTimer();
+        }
+    }catch(error){}
 }
 
 function gameLoop(){
@@ -449,21 +410,8 @@ function gameLoop(){
 
             state.score++;
             updateScore();
-
-            if(state.gameId){
-                fetch(
-                    `/api/games/${state.gameId}/meteor-escaped`,
-                    { method:"POST" }
-                ).catch(() => {});
-            }
-
-            if(state.score % 10 === 0 && state.level < 30){
-                state.level++;
-
-                levelUp.classList.remove("show");
-                void levelUp.offsetWidth;
-                levelUp.classList.add("show");
-            }
+            increaseLevel();
+            saveMeteorEscaped();
         }
     }
 
@@ -515,8 +463,6 @@ async function finishServerGame(){
 }
 
 async function startGame(){
-    requestFullscreenMode();
-
     if(!state.user){
         createAuthScreen();
         return;
@@ -530,6 +476,7 @@ async function startGame(){
     state.running = true;
 
     updateScore();
+
     menu.style.display = "none";
     gameOver.style.display = "none";
 
@@ -539,11 +486,7 @@ async function startGame(){
         return;
     }
 
-    state.meteorTimer = setInterval(
-        createMeteor,
-        Math.max(350,1100 - state.level * 20)
-    );
-
+    restartMeteorTimer();
     state.frame = requestAnimationFrame(gameLoop);
 }
 
@@ -567,13 +510,13 @@ function endGame(){
 
     stopGame();
     finishServerGame();
+
     gameOver.style.display = "flex";
 }
 
 function bindMovement(button,direction){
     button.addEventListener("pointerdown",event => {
         event.preventDefault();
-        requestFullscreenMode();
         setDirection(direction);
     });
 
@@ -586,7 +529,6 @@ $("start").addEventListener("click",startGame);
 $("restart").addEventListener("click",startGame);
 
 $("pickLevel").addEventListener("click",() => {
-    requestFullscreenMode();
     stopGame();
     gameOver.style.display = "none";
     menu.style.display = "flex";
@@ -598,8 +540,6 @@ bindMovement($("l"),-1);
 bindMovement($("r"),1);
 
 document.addEventListener("keydown",event => {
-    requestFullscreenMode();
-
     if(event.key === "ArrowLeft" || event.key.toLowerCase() === "a"){
         setDirection(-1);
     }
@@ -623,7 +563,7 @@ window.addEventListener("resize",() => {
 const style = document.createElement("style");
 
 style.textContent = `
-#authScreen,#adminPanel{
+#authScreen{
     position:fixed;
     inset:0;
     z-index:3000;
@@ -634,7 +574,7 @@ style.textContent = `
     color:#fff;
 }
 
-.authBox,.adminBox{
+.authBox{
     width:min(90%,380px);
     padding:28px;
     border:1px solid #00eaff;
@@ -644,12 +584,12 @@ style.textContent = `
     text-align:center;
 }
 
-.authBox h1,.adminBox h2{
+.authBox h1{
     margin-bottom:18px;
     color:#61efff;
 }
 
-.authBox input,.adminBox input,.adminBox select{
+.authBox input{
     width:100%;
     padding:13px;
     margin:7px 0;
@@ -659,7 +599,7 @@ style.textContent = `
     font-size:16px;
 }
 
-.authBox button,.adminBox button{
+.authBox button{
     width:100%;
     padding:12px;
     margin-top:10px;
@@ -675,7 +615,7 @@ style.textContent = `
     color:#72eaff;
 }
 
-#authMessage,#adminMessage{
+#authMessage{
     min-height:20px;
     margin-top:14px;
 }
@@ -696,13 +636,13 @@ style.textContent = `
     padding:8px 10px;
     border:0;
     border-radius:7px;
-    background:#075c9c;
+    background:#a83232;
     color:#fff;
     font-weight:bold;
 }
 
-#userPanel button:last-child{
-    background:#a83232;
+#levelUp{
+    white-space:nowrap;
 }
 `;
 
