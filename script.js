@@ -13,120 +13,91 @@ const state = {
     user: null,
     score: 0,
     level: 1,
-    playerX: innerWidth / 2,
+    startingLevel: 1,
+    playerX: window.innerWidth / 2,
     direction: 0,
     running: false,
     gameId: null,
     meteorTimer: null,
     frame: null,
-    fullscreenBusy: false
+    fullscreenBusy: false,
+    finishing: false,
+    levelNoticeTimer: null
 };
 
 const meteors = [];
 
 function levelSettings(level) {
-    const currentLevel = Math.max(1, Math.min(30, Number(level) || 1));
+    const currentLevel = Math.max(
+        1,
+        Math.min(30, Number(level) || 1)
+    );
 
     return {
         interval: Math.max(220, 1250 - currentLevel * 34),
         speedMin: 2.5 + currentLevel * 0.22,
         speedMax: 4 + currentLevel * 0.3,
-        size: innerWidth <= 600 ? 48 : 58
+        size: window.innerWidth <= 600 ? 48 : 58
     };
 }
 
-function requestFullscreenMode() {
-    if (document.fullscreenElement || state.fullscreenBusy) {
-        return;
-    }
-
-    const request =
-        document.documentElement.requestFullscreen ||
-        document.documentElement.webkitRequestFullscreen ||
-        document.documentElement.msRequestFullscreen;
-
-    if (!request) {
-        return;
-    }
-
-    state.fullscreenBusy = true;
-
-    try {
-        const result = request.call(document.documentElement);
-
-        if (result?.finally) {
-            result.finally(() => {
-                state.fullscreenBusy = false;
-            });
-        } else {
-            setTimeout(() => {
-                state.fullscreenBusy = false;
-            }, 500);
-        }
-    } catch {
-        state.fullscreenBusy = false;
-    }
-}
-
-function showMessage(element, text, error = true) {
-    if (!element) {
-        return;
-    }
-
-    element.textContent = text;
-    element.style.color = error ? "#ff7777" : "#7dffb2";
-}
-
 function updateScore() {
-    scoreText.textContent =
-        `Score : ${state.score} | Level : ${state.level}`;
+    scoreText.innerHTML = `
+        <div class="score-value">Score : ${state.score}</div>
+        <div class="level-value">Level : ${state.level}</div>
+    `;
 }
 
 function showLevelUp() {
-    levelUp.textContent = `LEVEL ${state.level} UP!`;
+    clearTimeout(state.levelNoticeTimer);
+
+    levelUp.textContent = `LEVEL ${state.level} MENINGKAT!`;
     levelUp.classList.remove("show");
 
     void levelUp.offsetWidth;
     levelUp.classList.add("show");
 
-    setTimeout(() => {
+    state.levelNoticeTimer = setTimeout(() => {
         levelUp.classList.remove("show");
     }, 1200);
 }
 
-function increaseLevel() {
+function updateLevel(showNotice = true) {
     const nextLevel = Math.min(
         30,
-        Number(levelSelect.value || 1) + Math.floor(state.score / 10)
+        state.startingLevel + Math.floor(state.score / 10)
     );
 
     if (nextLevel > state.level) {
         state.level = nextLevel;
         updateScore();
-        showLevelUp();
+
+        if (showNotice) {
+            showLevelUp();
+        }
+
         restartMeteorTimer();
     }
 }
 
 function restartMeteorTimer() {
     clearInterval(state.meteorTimer);
+    state.meteorTimer = null;
 
     if (!state.running) {
         return;
     }
 
-    const settings = levelSettings(state.level);
-
     state.meteorTimer = setInterval(
         createMeteor,
-        settings.interval
+        levelSettings(state.level).interval
     );
 }
 
 function updatePlayer() {
     const width = player.offsetWidth || 70;
     const min = width / 2;
-    const max = innerWidth - width / 2;
+    const max = Math.max(min, window.innerWidth - width / 2);
 
     state.playerX += state.direction * 7;
     state.playerX = Math.max(min, Math.min(max, state.playerX));
@@ -153,17 +124,21 @@ function createMeteor() {
 
     const settings = levelSettings(state.level);
     const meteor = document.createElement("div");
-    const x = Math.random() * Math.max(1, innerWidth - settings.size);
+    const startY = -settings.size - 90;
+    const x = Math.random() * Math.max(
+        1,
+        window.innerWidth - settings.size
+    );
 
     meteor.className = "a";
     meteor.style.left = `${x}px`;
-    meteor.style.top = `${-settings.size - 90}px`;
+    meteor.style.top = `${startY}px`;
 
     document.body.appendChild(meteor);
 
     meteors.push({
         element: meteor,
-        y: -settings.size - 90,
+        y: startY,
         speed: settings.speedMin +
             Math.random() * (settings.speedMax - settings.speedMin)
     });
@@ -177,26 +152,41 @@ function overlap(first, second) {
 }
 
 function removeMeteor(index) {
-    meteors[index]?.element.remove();
+    const meteor = meteors[index];
+
+    if (meteor?.element?.isConnected) {
+        meteor.element.remove();
+    }
+
     meteors.splice(index, 1);
 }
 
 function clearMeteors() {
-    while (meteors.length) {
-        removeMeteor(0);
+    for (let index = meteors.length - 1; index >= 0; index--) {
+        removeMeteor(index);
     }
 }
 
 async function saveMeteorEscaped() {
-    if (!state.gameId) {
+    if (!state.gameId || !state.running) {
         return;
     }
 
     try {
         const response = await fetch(
             `/api/games/${state.gameId}/meteor-escaped`,
-            { method: "POST" }
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                }
+            }
         );
+
+        if (response.status === 401) {
+            await logout();
+            return;
+        }
 
         if (!response.ok) {
             return;
@@ -204,13 +194,28 @@ async function saveMeteorEscaped() {
 
         const data = await response.json();
 
-        if (Number(data.level) > state.level) {
-            state.level = Math.min(30, Number(data.level));
-            updateScore();
-            showLevelUp();
-            restartMeteorTimer();
+        if (Number.isFinite(data.score)) {
+            state.score = data.score;
         }
-    } catch {}
+
+        if (Number.isFinite(data.level)) {
+            const oldLevel = state.level;
+
+            state.level = Math.max(
+                1,
+                Math.min(30, Number(data.level))
+            );
+
+            if (state.level > oldLevel) {
+                showLevelUp();
+                restartMeteorTimer();
+            }
+        }
+
+        updateScore();
+    } catch {
+        // Permainan tetap berjalan jika server tidak tersedia.
+    }
 }
 
 function gameLoop() {
@@ -233,13 +238,14 @@ function gameLoop() {
             return;
         }
 
-        if (meteor.y > innerHeight + 100) {
+        if (meteor.y > window.innerHeight + 100) {
             removeMeteor(index);
 
             state.score++;
+            updateLevel();
             updateScore();
-            increaseLevel();
-            saveMeteorEscaped();
+
+            void saveMeteorEscaped();
         }
     }
 
@@ -247,6 +253,10 @@ function gameLoop() {
 }
 
 async function createServerGame() {
+    if (!state.user) {
+        return false;
+    }
+
     try {
         const response = await fetch("/api/games", {
             method: "POST",
@@ -268,26 +278,40 @@ async function createServerGame() {
         }
 
         const data = await response.json();
-        state.gameId = data.gameId;
 
-        return Boolean(state.gameId);
+        if (!data.gameId) {
+            return false;
+        }
+
+        state.gameId = data.gameId;
+        return true;
     } catch {
         return false;
     }
 }
 
 async function finishServerGame() {
-    if (!state.gameId) {
+    if (!state.gameId || state.finishing) {
         return;
     }
 
-    try {
-        await fetch(`/api/games/${state.gameId}/finish`, {
-            method: "POST"
-        });
-    } catch {}
+    state.finishing = true;
 
+    const gameId = state.gameId;
     state.gameId = null;
+
+    try {
+        await fetch(`/api/games/${gameId}/finish`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            }
+        });
+    } catch {
+        // Data lokal tetap aman walaupun server gagal merespons.
+    } finally {
+        state.finishing = false;
+    }
 }
 
 async function startGame() {
@@ -296,11 +320,17 @@ async function startGame() {
         return;
     }
 
+    requestFullscreenMode();
     stopGame();
 
     state.score = 0;
-    state.level = Number(levelSelect.value) || 1;
-    state.playerX = innerWidth / 2;
+    state.startingLevel = Math.max(
+        1,
+        Math.min(30, Number(levelSelect.value) || 1)
+    );
+    state.level = state.startingLevel;
+    state.playerX = window.innerWidth / 2;
+    state.gameId = null;
     state.running = true;
 
     updateScore();
@@ -308,7 +338,9 @@ async function startGame() {
     menu.style.display = "none";
     gameOver.style.display = "none";
 
-    if (!await createServerGame()) {
+    const created = await createServerGame();
+
+    if (!created) {
         stopGame();
         menu.style.display = "flex";
         return;
@@ -337,14 +369,52 @@ function endGame() {
     }
 
     stopGame();
-    finishServerGame();
+    void finishServerGame();
 
     gameOver.style.display = "flex";
 }
 
+function requestFullscreenMode() {
+    if (document.fullscreenElement || state.fullscreenBusy) {
+        return;
+    }
+
+    const request =
+        document.documentElement.requestFullscreen ||
+        document.documentElement.webkitRequestFullscreen ||
+        document.documentElement.msRequestFullscreen;
+
+    if (typeof request !== "function") {
+        return;
+    }
+
+    state.fullscreenBusy = true;
+
+    try {
+        const result = request.call(document.documentElement);
+
+        if (result && typeof result.finally === "function") {
+            result.finally(() => {
+                state.fullscreenBusy = false;
+            });
+        } else {
+            setTimeout(() => {
+                state.fullscreenBusy = false;
+            }, 700);
+        }
+    } catch {
+        state.fullscreenBusy = false;
+    }
+}
+
 function bindMovement(button, direction) {
+    if (!button) {
+        return;
+    }
+
     button.addEventListener("pointerdown", event => {
         event.preventDefault();
+        requestFullscreenMode();
         setDirection(direction);
     });
 
@@ -356,14 +426,31 @@ function bindMovement(button, direction) {
 async function loadConfig() {
     try {
         const response = await fetch("/api/game-config");
-        const data = await response.json();
 
-        if (data.runningText) {
-            $("gameTitle").textContent = data.runningText;
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+        const title = $("gameTitle");
+
+        if (title && data.runningText) {
+            title.textContent = data.runningText;
         }
 
         document.body.dataset.effect = data.effect || "rainbow";
-    } catch {}
+    } catch {
+        // Konfigurasi default HTML tetap digunakan.
+    }
+}
+
+function showMessage(element, text, error = true) {
+    if (!element) {
+        return;
+    }
+
+    element.textContent = text;
+    element.style.color = error ? "#ff7777" : "#7dffb2";
 }
 
 function showAdminPanel() {
@@ -378,10 +465,13 @@ function showAdminPanel() {
 
     panel.innerHTML = `
         <h3>ADMIN PANEL</h3>
+
+        <label for="adminRunningText">Teks berjalan</label>
         <input id="adminRunningText"
             maxlength="80"
-            placeholder="Teks berjalan">
+            placeholder="Masukkan teks berjalan">
 
+        <label for="adminEffect">Efek teks</label>
         <select id="adminEffect">
             <option value="rainbow">Rainbow</option>
             <option value="pulse">Pulse</option>
@@ -389,7 +479,10 @@ function showAdminPanel() {
             <option value="static">Static</option>
         </select>
 
-        <button id="saveAdminConfig">SIMPAN KONFIGURASI</button>
+        <button id="saveAdminConfig" type="button">
+            SIMPAN KONFIGURASI
+        </button>
+
         <p id="adminMessage"></p>
     `;
 
@@ -398,16 +491,35 @@ function showAdminPanel() {
     const textInput = $("adminRunningText");
     const effectSelect = $("adminEffect");
     const message = $("adminMessage");
+    const saveButton = $("saveAdminConfig");
 
     fetch("/api/game-config")
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error("Konfigurasi tidak tersedia.");
+            }
+
+            return response.json();
+        })
         .then(data => {
             textInput.value = data.runningText || "SANDRO GAME V2";
             effectSelect.value = data.effect || "rainbow";
         })
-        .catch(() => {});
+        .catch(() => {
+            textInput.value = "SANDRO GAME V2";
+            effectSelect.value = "rainbow";
+        });
 
-    $("saveAdminConfig").addEventListener("click", async () => {
+    saveButton.addEventListener("click", async () => {
+        const runningText = textInput.value.trim();
+
+        if (!runningText) {
+            showMessage(message, "Teks berjalan tidak boleh kosong.");
+            return;
+        }
+
+        saveButton.disabled = true;
+
         try {
             const response = await fetch("/api/admin/game-config", {
                 method: "POST",
@@ -415,7 +527,7 @@ function showAdminPanel() {
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    runningText: textInput.value,
+                    runningText,
                     effect: effectSelect.value
                 })
             });
@@ -423,13 +535,26 @@ function showAdminPanel() {
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.error || "Gagal menyimpan konfigurasi");
+                throw new Error(
+                    data.error || "Gagal menyimpan konfigurasi."
+                );
             }
 
             $("gameTitle").textContent = data.runningText;
-            showMessage(message, "Konfigurasi berhasil disimpan.", false);
+            document.body.dataset.effect = data.effect;
+
+            showMessage(
+                message,
+                "Konfigurasi admin berhasil disimpan.",
+                false
+            );
         } catch (error) {
-            showMessage(message, error.message);
+            showMessage(
+                message,
+                error.message || "Terjadi kesalahan."
+            );
+        } finally {
+            saveButton.disabled = false;
         }
     });
 }
@@ -440,31 +565,47 @@ function showUserPanel() {
     const panel = document.createElement("div");
     panel.id = "userPanel";
 
-    panel.innerHTML = `
-        <span>👤 ${state.user.username}</span>
-        <button id="logoutButton">LOGOUT</button>
-    `;
+    const username = document.createElement("span");
+    username.textContent = `👤 ${state.user.username}`;
 
+    panel.appendChild(username);
+
+    if (state.user.isAdmin) {
+        const adminLabel = document.createElement("strong");
+        adminLabel.textContent = "ADMIN";
+        panel.appendChild(adminLabel);
+    }
+
+    const logoutButton = document.createElement("button");
+    logoutButton.id = "logoutButton";
+    logoutButton.type = "button";
+    logoutButton.textContent = "LOGOUT";
+
+    panel.appendChild(logoutButton);
     document.body.appendChild(panel);
 
-    $("logoutButton").addEventListener("click", logout);
+    logoutButton.addEventListener("click", logout);
     showAdminPanel();
 }
 
 async function logout() {
     stopGame();
+    await finishServerGame();
 
     try {
         await fetch("/api/auth/logout", {
             method: "POST"
         });
-    } catch {}
+    } catch {
+        // Sesi lokal tetap dihapus.
+    }
 
     state.user = null;
     state.gameId = null;
 
     document.getElementById("userPanel")?.remove();
     document.getElementById("adminPanel")?.remove();
+    document.getElementById("authScreen")?.remove();
 
     menu.style.display = "flex";
     gameOver.style.display = "none";
@@ -522,6 +663,8 @@ function createAuthScreen() {
     let registerMode = false;
 
     switchButton.addEventListener("click", () => {
+        requestFullscreenMode();
+
         registerMode = !registerMode;
 
         title.textContent = registerMode ? "DAFTAR AKUN" : "LOGIN";
@@ -540,6 +683,7 @@ function createAuthScreen() {
 
     form.addEventListener("submit", async event => {
         event.preventDefault();
+        requestFullscreenMode();
 
         const name = username.value.trim().toLowerCase();
         const pass = password.value;
@@ -552,8 +696,11 @@ function createAuthScreen() {
             return;
         }
 
-        if (pass.length < 8) {
-            showMessage(message, "Password minimal 8 karakter.");
+        if (pass.length < 8 || pass.length > 72) {
+            showMessage(
+                message,
+                "Password harus terdiri dari 8 sampai 72 karakter."
+            );
             return;
         }
 
@@ -589,7 +736,10 @@ function createAuthScreen() {
             showUserPanel();
             await loadConfig();
         } catch (error) {
-            showMessage(message, error.message);
+            showMessage(
+                message,
+                error.message || "Terjadi kesalahan."
+            );
         } finally {
             submit.disabled = false;
             submit.textContent = registerMode ? "DAFTAR" : "LOGIN";
@@ -601,162 +751,83 @@ function injectDynamicStyles() {
     const style = document.createElement("style");
 
     style.textContent = `
-        #authScreen {
-            position: fixed;
-            inset: 0;
-            z-index: 3000;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: rgba(0,0,0,.88);
-            color: #fff;
+        #score {
+            min-width: 180px;
+            line-height: 1.35;
         }
 
-        .authBox {
-            width: min(90%, 380px);
-            padding: 28px;
-            border: 1px solid #00eaff;
-            border-radius: 18px;
-            background: rgba(5,12,38,.97);
-            box-shadow: 0 0 30px #00bfff;
-            text-align: center;
+        #score .score-value {
+            font-size: 24px;
+            font-weight: 900;
         }
 
-        .authBox h1 {
-            margin-bottom: 18px;
-            color: #61efff;
+        #score .level-value {
+            margin-top: 3px;
+            color: #ffe66d;
+            font-size: 20px;
+            font-weight: 900;
+            text-shadow: 0 0 10px #ffb300;
         }
 
-        .authBox input,
-        .authBox button {
-            width: 100%;
-            padding: 13px;
-            margin: 7px 0;
-            border: 0;
-            border-radius: 8px;
-            box-sizing: border-box;
-            font-size: 16px;
-        }
-
-        .authBox button {
-            background: #00aaff;
-            color: #fff;
-            font-weight: bold;
-        }
-
-        .authBox .secondary {
-            background: transparent;
-            color: #72eaff;
-        }
-
-        #authMessage,
-        #adminMessage {
-            min-height: 20px;
-            margin-top: 14px;
-        }
-
-        #userPanel {
-            position: fixed;
-            top: 15px;
-            right: 15px;
-            z-index: 2000;
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            color: #fff;
-            font-size: 13px;
-        }
-
-        #userPanel button,
-        #adminPanel button {
-            padding: 8px 10px;
-            border: 0;
-            border-radius: 7px;
-            background: #a83232;
-            color: #fff;
-            font-weight: bold;
-        }
-
-        #adminPanel {
-            position: fixed;
-            top: 58px;
-            right: 15px;
-            z-index: 2000;
-            width: 240px;
-            padding: 14px;
-            border: 1px solid #ffcc00;
-            border-radius: 12px;
-            background: rgba(10,10,35,.94);
-            color: #fff;
-            box-shadow: 0 0 18px rgba(255,204,0,.6);
-        }
-
-        #adminPanel h3 {
-            margin: 0 0 10px;
-            color: #ffdf4d;
-        }
-
-        #adminPanel input,
-        #adminPanel select,
-        #adminPanel button {
-            width: 100%;
-            margin: 5px 0;
-            padding: 9px;
-            box-sizing: border-box;
-        }
-
-        #adminPanel button {
-            background: #008fbd;
+        #gameTitle {
+            font-weight: 900 !important;
+            -webkit-text-stroke: 1.5px rgba(255,255,255,.35);
         }
 
         #levelUp {
             white-space: nowrap;
+            font-weight: 900;
         }
-    `;
 
-    document.head.appendChild(style);
-}
+        #userPanel {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            z-index: 1001;
+            padding: 8px 12px;
+            border: 1px solid rgba(255,255,255,.35);
+            border-radius: 10px;
+            background: rgba(0,0,0,.65);
+            color: white;
+            transform: translateX(-50%);
+        }
 
-$("start").addEventListener("click", startGame);
-$("restart").addEventListener("click", startGame);
+        #userPanel strong {
+            padding: 4px 7px;
+            border-radius: 5px;
+            background: #ffb300;
+            color: #151515;
+            font-size: 11px;
+        }
 
-$("pickLevel").addEventListener("click", () => {
-    stopGame();
-    gameOver.style.display = "none";
-    menu.style.display = "flex";
-});
+        #userPanel button,
+        #adminPanel button {
+            cursor: pointer;
+        }
 
-$("fs").addEventListener("click", requestFullscreenMode);
+        #adminPanel {
+            position: fixed;
+            top: 75px;
+            right: 20px;
+            z-index: 1001;
+            width: min(300px, calc(100vw - 40px));
+            padding: 15px;
+            border: 1px solid #00eaff;
+            border-radius: 12px;
+            background: rgba(0,0,0,.82);
+            color: white;
+            box-shadow: 0 0 18px rgba(0,234,255,.5);
+        }
 
-bindMovement($("l"), -1);
-bindMovement($("r"), 1);
+        #adminPanel label {
+            display: block;
+            margin-top: 8px;
+            color: #ffe66d;
+            font-size: 12px;
+        }
 
-document.addEventListener("keydown", event => {
-    if (event.key === "ArrowLeft" || event.key.toLowerCase() === "a") {
-        setDirection(-1);
-    }
-
-    if (event.key === "ArrowRight" || event.key.toLowerCase() === "d") {
-        setDirection(1);
-    }
-});
-
-document.addEventListener("keyup", event => {
-    if (["ArrowLeft", "ArrowRight", "a", "d"].includes(event.key)) {
-        setDirection(0);
-    }
-});
-
-document.addEventListener("pointerdown", requestFullscreenMode, true);
-document.addEventListener("touchstart", requestFullscreenMode, true);
-
-window.addEventListener("resize", () => {
-    state.playerX = Math.min(state.playerX, innerWidth);
-    updatePlayer();
-});
-
-injectDynamicStyles();
-updatePlayer();
-updateScore();
-createAuthScreen();
-loadConfig();
+        #adminPanel input,
+        #adminPanel se
